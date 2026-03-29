@@ -1,9 +1,14 @@
 require('dotenv').config();
+
 const express = require('express');
 const axios = require('axios');
 const { WebClient } = require('@slack/web-api');
 
 const app = express();
+
+// ✅ DEBUG (so we confirm ENV is working)
+console.log("Slack Token:", process.env.SLACK_BOT_TOKEN);
+console.log("Monday Token:", process.env.MONDAY_API_TOKEN);
 
 // ✅ body parsing
 app.use(express.json());
@@ -17,8 +22,28 @@ const MONDAY_API = "https://api.monday.com/v2";
 HEALTH CHECK
 ===========================================
 */
-app.get('/', (req, res) => {
-    res.send("Server is running 🚀");
+app.get('/test-slack', async (req, res) => {
+    try {
+        const channelId = await createUniqueChannel("test-client");
+
+        console.log("Channel created:", channelId);
+
+        // ✅ ADD YOURSELF (U0AF5TEDC8M)
+        await slack.conversations.invite({
+            channel: channelId,
+            users: "U0AF5TEDC8M"
+        });
+
+        await slack.chat.postMessage({
+            channel: channelId,
+            text: "🚀 Your Slack bot is working!"
+        });
+
+        res.send("Slack test successful");
+    } catch (err) {
+        console.error("Slack Test Error FULL:", err.data || err);
+        res.send("Slack test failed");
+    }
 });
 
 /*
@@ -46,7 +71,7 @@ async function createUniqueChannel(baseName) {
         try {
             const response = await slack.conversations.create({
                 name: name,
-                is_private: false
+                is_private: true // 🔥 make private (recommended)
             });
             return response.channel.id;
         } catch (error) {
@@ -68,13 +93,12 @@ MONDAY WEBHOOK
 */
 app.post('/monday-webhook', async (req, res) => {
 
-    // ✅ VERY IMPORTANT (verification)
     if (req.body.challenge) {
         return res.status(200).json({ challenge: req.body.challenge });
     }
 
     try {
-        console.log("Webhook:", JSON.stringify(req.body, null, 2));
+        console.log("Webhook received:", JSON.stringify(req.body, null, 2));
 
         const itemId = req.body.event?.pulseId;
 
@@ -117,7 +141,7 @@ app.post('/monday-webhook', async (req, res) => {
         const clientEmail = getColumn("emailg3gyzi24");
         const tier = getColumn("single_select62ell81");
 
-        console.log(clientName, clientEmail, tier);
+        console.log("Extracted:", clientName, clientEmail, tier);
 
         const calendlyLink = tierCalendly[tier] || "https://calendly.com/default";
 
@@ -126,7 +150,7 @@ app.post('/monday-webhook', async (req, res) => {
 
         await slack.conversations.join({ channel: channelId });
 
-        // Invite (may fail if Slack Connect not enabled)
+        // Invite (optional)
         try {
             await slack.conversations.inviteShared({
                 channel: channelId,
