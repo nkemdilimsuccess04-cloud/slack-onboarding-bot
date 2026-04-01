@@ -12,11 +12,7 @@ app.use(express.urlencoded({ extended: true }));
 const slack = new WebClient(process.env.SLACK_BOT_TOKEN);
 const MONDAY_API = "https://api.monday.com/v2";
 
-/*
-===========================================
-CONFIG (CHANGE IF NEEDED)
-===========================================
-*/
+// 🔹 CONFIG
 const EMAIL_COLUMN_ID = "emailg3gyzi24";
 const TIER_COLUMN_ID = "single_select62ell81";
 
@@ -31,25 +27,12 @@ app.get('/', (req, res) => {
 
 /*
 ===========================================
-MONDAY WEBHOOK
+WAIT FOR COMPLETE DATA
 ===========================================
 */
-app.post('/monday-webhook', async (req, res) => {
+async function waitForCompleteData(itemId) {
+    for (let i = 0; i < 5; i++) {
 
-    // ✅ verification
-    if (req.body.challenge) {
-        return res.status(200).json({ challenge: req.body.challenge });
-    }
-
-    // ✅ respond immediately
-    res.status(200).send("Received");
-
-    try {
-        if (!req.body.event || !req.body.event.pulseId) return;
-
-        const itemId = req.body.event.pulseId;
-
-        // 🔹 Fetch full item
         const query = `
             query {
                 items(ids: ${itemId}) {
@@ -83,17 +66,54 @@ app.post('/monday-webhook', async (req, res) => {
         const clientEmail = getColumn(EMAIL_COLUMN_ID);
         const tierText = getColumn(TIER_COLUMN_ID);
 
-        // ❌ STOP if anything is missing
-        if (!clientName || !clientEmail || !tierText) {
-            console.log("Missing required data — skipping");
+        // ✅ Check if data is complete
+        if (
+            clientName &&
+            clientEmail &&
+            tierText &&
+            clientName.toLowerCase() !== "new item"
+        ) {
+            return { clientName, clientEmail, tierText };
+        }
+
+        console.log("Waiting for complete data...");
+        await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+
+    return null;
+}
+
+/*
+===========================================
+MONDAY WEBHOOK
+===========================================
+*/
+app.post('/monday-webhook', async (req, res) => {
+
+    // ✅ verification
+    if (req.body.challenge) {
+        return res.status(200).json({ challenge: req.body.challenge });
+    }
+
+    // ✅ respond immediately
+    res.status(200).send("Received");
+
+    try {
+        if (!req.body.event || !req.body.event.pulseId) return;
+
+        const itemId = req.body.event.pulseId;
+
+        // 🔥 WAIT for full data
+        const data = await waitForCompleteData(itemId);
+
+        if (!data) {
+            console.log("Data never completed — skipping");
             return;
         }
 
-        // ❌ STOP placeholder names
-        if (clientName.toLowerCase() === "new item") {
-            console.log("Placeholder item — skipping");
-            return;
-        }
+        const { clientName, tierText } = data;
+
+        console.log("Creating channel for:", clientName);
 
         // 🔹 Convert tier → t1 / t2 / t3
         let tier = tierText.toLowerCase();
@@ -101,9 +121,9 @@ app.post('/monday-webhook', async (req, res) => {
         if (tier.includes("1")) tier = "t1";
         else if (tier.includes("2")) tier = "t2";
         else if (tier.includes("3")) tier = "t3";
-        else tier = "t1"; // fallback
+        else tier = "t1";
 
-        // 🔹 Build channel name
+        // 🔹 Clean name
         let baseName = clientName
             .toLowerCase()
             .replace(/\s+/g, '-')
@@ -114,7 +134,7 @@ app.post('/monday-webhook', async (req, res) => {
         let count = 1;
         let channelId;
 
-        // 🔹 Ensure unique name
+        // 🔹 Ensure unique channel name
         while (true) {
             try {
                 const channel = await slack.conversations.create({
@@ -148,7 +168,7 @@ app.post('/monday-webhook', async (req, res) => {
             users: userId
         });
 
-        // 🔹 Confirmation message
+        // 🔹 Send confirmation
         await slack.chat.postMessage({
             channel: channelId,
             text: `Channel created for ${clientName} (${tier.toUpperCase()}) ✅`
