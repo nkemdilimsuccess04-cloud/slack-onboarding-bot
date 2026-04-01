@@ -28,12 +28,12 @@ MONDAY WEBHOOK
 */
 app.post('/monday-webhook', async (req, res) => {
 
-    // ✅ Handle Monday verification
+    // ✅ Monday verification
     if (req.body.challenge) {
         return res.status(200).json({ challenge: req.body.challenge });
     }
 
-    // ✅ Respond immediately (VERY IMPORTANT)
+    // ✅ Respond immediately (prevents Monday timeout)
     res.status(200).send("Received");
 
     try {
@@ -43,7 +43,7 @@ app.post('/monday-webhook', async (req, res) => {
 
         const itemId = req.body.event.pulseId;
 
-        // 🔹 Fetch client name from Monday
+        // 🔹 Fetch client name
         const query = `
             query {
                 items(ids: ${itemId}) {
@@ -65,21 +65,38 @@ app.post('/monday-webhook', async (req, res) => {
 
         const clientName = response.data.data.items[0].name;
 
-        // 🔹 Clean channel name
-        const channelName = clientName
+        // 🔹 Clean base channel name
+        let baseName = clientName
             .toLowerCase()
             .replace(/\s+/g, '-')
             .replace(/[^a-z0-9\-]/g, '');
 
-        // 🔹 Create PRIVATE channel
-        const channel = await slack.conversations.create({
-            name: channelName,
-            is_private: true
-        });
+        let finalName = baseName;
+        let count = 1;
+        let channelId;
 
-        const channelId = channel.channel.id;
+        // 🔹 Ensure unique channel name
+        while (true) {
+            try {
+                const channel = await slack.conversations.create({
+                    name: finalName,
+                    is_private: true
+                });
 
-        // 🔹 Add ONLY YOU
+                channelId = channel.channel.id;
+                break;
+
+            } catch (error) {
+                if (error.data?.error === "name_taken") {
+                    finalName = `${baseName}-${count}`;
+                    count++;
+                } else {
+                    throw error;
+                }
+            }
+        }
+
+        // 🔹 Add YOU to the channel
         await slack.conversations.invite({
             channel: channelId,
             users: process.env.YOUR_SLACK_USER_ID
