@@ -6,11 +6,6 @@ const { WebClient } = require('@slack/web-api');
 
 const app = express();
 
-// ✅ DEBUG (so we confirm ENV is working)
-console.log("Slack Token:", process.env.SLACK_BOT_TOKEN);
-console.log("Monday Token:", process.env.MONDAY_API_TOKEN);
-
-// ✅ body parsing
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -22,69 +17,9 @@ const MONDAY_API = "https://api.monday.com/v2";
 HEALTH CHECK
 ===========================================
 */
-app.get('/test-slack', async (req, res) => {
-    try {
-        const channelId = await createUniqueChannel("test-client");
-
-        console.log("Channel created:", channelId);
-
-        // ✅ ADD YOURSELF (U0AF5TEDC8M)
-        await slack.conversations.invite({
-            channel: channelId,
-            users: "U0AF5TEDC8M"
-        });
-
-        await slack.chat.postMessage({
-            channel: channelId,
-            text: "🚀 Your Slack bot is working!"
-        });
-
-        res.send("Slack test successful");
-    } catch (err) {
-        console.error("Slack Test Error FULL:", err.data || err);
-        res.send("Slack test failed");
-    }
+app.get('/', (req, res) => {
+    res.send("Server is running 🚀");
 });
-
-/*
-===========================================
-TIER → CALENDLY
-===========================================
-*/
-const tierCalendly = {
-    "Basic": "https://calendly.com/your-basic-link",
-    "Pro": "https://calendly.com/your-pro-link",
-    "Premium": "https://calendly.com/your-premium-link"
-};
-
-/*
-===========================================
-CREATE CHANNEL
-===========================================
-*/
-async function createUniqueChannel(baseName) {
-    let base = baseName.toLowerCase().replace(/\s+/g, '-');
-    let name = base;
-    let count = 1;
-
-    while (true) {
-        try {
-            const response = await slack.conversations.create({
-                name: name,
-                is_private: true // 🔥 make private (recommended)
-            });
-            return response.channel.id;
-        } catch (error) {
-            if (error.data?.error === "name_taken") {
-                name = `${base}-${count}`;
-                count++;
-            } else {
-                console.error("Channel error:", error.data || error);
-                throw error;
-            }
-        }
-    }
-}
 
 /*
 ===========================================
@@ -93,28 +28,26 @@ MONDAY WEBHOOK
 */
 app.post('/monday-webhook', async (req, res) => {
 
+    // ✅ Handle Monday verification
     if (req.body.challenge) {
         return res.status(200).json({ challenge: req.body.challenge });
     }
 
+    // ✅ Respond immediately (VERY IMPORTANT)
+    res.status(200).send("Received");
+
     try {
-        console.log("Webhook received:", JSON.stringify(req.body, null, 2));
+        console.log("Webhook:", req.body);
 
-        const itemId = req.body.event?.pulseId;
+        if (!req.body.event || !req.body.event.pulseId) return;
 
-        if (!itemId) {
-            return res.status(400).send("No itemId");
-        }
+        const itemId = req.body.event.pulseId;
 
-        // Fetch from Monday
+        // 🔹 Fetch client name from Monday
         const query = `
             query {
                 items(ids: ${itemId}) {
                     name
-                    column_values {
-                        id
-                        text
-                    }
                 }
             }
         `;
@@ -130,56 +63,36 @@ app.post('/monday-webhook', async (req, res) => {
             }
         );
 
-        const item = response.data.data.items[0];
+        const clientName = response.data.data.items[0].name;
 
-        const clientName = item.name;
-        const columns = item.column_values;
+        // 🔹 Clean channel name
+        const channelName = clientName
+            .toLowerCase()
+            .replace(/\s+/g, '-')
+            .replace(/[^a-z0-9\-]/g, '');
 
-        const getColumn = (id) =>
-            columns.find(col => col.id === id)?.text || "";
-
-        const clientEmail = getColumn("emailg3gyzi24");
-        const tier = getColumn("single_select62ell81");
-
-        console.log("Extracted:", clientName, clientEmail, tier);
-
-        const calendlyLink = tierCalendly[tier] || "https://calendly.com/default";
-
-        // Create channel
-        const channelId = await createUniqueChannel(clientName);
-
-        await slack.conversations.join({ channel: channelId });
-
-        // Invite (optional)
-        try {
-            await slack.conversations.inviteShared({
-                channel: channelId,
-                emails: [clientEmail]
-            });
-        } catch (e) {
-            console.log("Invite skipped or failed");
-        }
-
-        // Send message
-        await slack.chat.postMessage({
-            channel: channelId,
-            text: `Hi ${clientName} 👋
-
-Welcome to your onboarding workspace!
-
-You are on the ${tier} plan.
-
-📅 Book your onboarding call:
-${calendlyLink}
-
-We’re excited to work with you 🚀`
+        // 🔹 Create PRIVATE channel
+        const channel = await slack.conversations.create({
+            name: channelName,
+            is_private: true
         });
 
-        res.status(200).send("Success");
+        const channelId = channel.channel.id;
+
+        // 🔹 Add ONLY YOU
+        await slack.conversations.invite({
+            channel: channelId,
+            users: process.env.YOUR_SLACK_USER_ID
+        });
+
+        // 🔹 Send confirmation message
+        await slack.chat.postMessage({
+            channel: channelId,
+            text: `Private channel created for ${clientName} ✅`
+        });
 
     } catch (error) {
-        console.error("ERROR:", error.response?.data || error.message);
-        res.status(500).send("Error");
+        console.error("ERROR:", error.data || error.message);
     }
 });
 
