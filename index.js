@@ -12,56 +12,52 @@ app.use(express.urlencoded({ extended: true }));
 const slack = new WebClient(process.env.SLACK_BOT_TOKEN);
 const MONDAY_API = "https://api.monday.com/v2";
 
-// ✅ YOUR SLACK USER ID
-const YOUR_USER_ID = "U0AF5TEDC8M";
+/*
+===========================================
+CONFIG (CHANGE IF NEEDED)
+===========================================
+*/
+const EMAIL_COLUMN_ID = "emailg3gyzi24";
+const TIER_COLUMN_ID = "single_select62ell81";
 
-// ✅ HEALTH CHECK
+/*
+===========================================
+HEALTH CHECK
+===========================================
+*/
 app.get('/', (req, res) => {
     res.send("Server is running 🚀");
 });
 
-// 🔥 CREATE UNIQUE PRIVATE CHANNEL
-async function createUniqueChannel(name) {
-    let base = name.toLowerCase().replace(/\s+/g, '-');
-    let channelName = base;
-    let count = 1;
-
-    while (true) {
-        try {
-            const result = await slack.conversations.create({
-                name: channelName,
-                is_private: true
-            });
-            return result.channel.id;
-        } catch (error) {
-            if (error.data?.error === "name_taken") {
-                channelName = `${base}-${count}`;
-                count++;
-            } else {
-                console.error("Channel error:", error.data || error);
-                throw error;
-            }
-        }
-    }
-}
-
-// 🔥 MONDAY WEBHOOK
+/*
+===========================================
+MONDAY WEBHOOK
+===========================================
+*/
 app.post('/monday-webhook', async (req, res) => {
 
-    // ✅ Monday verification
+    // ✅ verification
     if (req.body.challenge) {
         return res.status(200).json({ challenge: req.body.challenge });
     }
 
-    try {
-        const itemId = req.body.event?.pulseId;
-        if (!itemId) return res.status(400).send("No itemId");
+    // ✅ respond immediately
+    res.status(200).send("Received");
 
-        // 🔹 Get item name
+    try {
+        if (!req.body.event || !req.body.event.pulseId) return;
+
+        const itemId = req.body.event.pulseId;
+
+        // 🔹 Fetch full item
         const query = `
             query {
                 items(ids: ${itemId}) {
                     name
+                    column_values {
+                        id
+                        text
+                    }
                 }
             }
         `;
@@ -77,37 +73,97 @@ app.post('/monday-webhook', async (req, res) => {
             }
         );
 
-        const clientName = response.data.data.items[0].name;
+        const item = response.data.data.items[0];
+        const clientName = item.name;
+        const columns = item.column_values;
 
-        console.log("Creating channel for:", clientName);
+        const getColumn = (id) =>
+            columns.find(col => col.id === id)?.text || "";
 
-        // 🔹 Create channel
-        const channelId = await createUniqueChannel(clientName);
+        const clientEmail = getColumn(EMAIL_COLUMN_ID);
+        const tierText = getColumn(TIER_COLUMN_ID);
 
-        // 🔹 Bot joins channel
-        await slack.conversations.join({ channel: channelId });
+        // ❌ STOP if anything is missing
+        if (!clientName || !clientEmail || !tierText) {
+            console.log("Missing required data — skipping");
+            return;
+        }
 
-        // 🔹 Add YOU to channel
+        // ❌ STOP placeholder names
+        if (clientName.toLowerCase() === "new item") {
+            console.log("Placeholder item — skipping");
+            return;
+        }
+
+        // 🔹 Convert tier → t1 / t2 / t3
+        let tier = tierText.toLowerCase();
+
+        if (tier.includes("1")) tier = "t1";
+        else if (tier.includes("2")) tier = "t2";
+        else if (tier.includes("3")) tier = "t3";
+        else tier = "t1"; // fallback
+
+        // 🔹 Build channel name
+        let baseName = clientName
+            .toLowerCase()
+            .replace(/\s+/g, '-')
+            .replace(/[^a-z0-9\-]/g, '');
+
+        let finalName = `${baseName}-content-${tier}`;
+
+        let count = 1;
+        let channelId;
+
+        // 🔹 Ensure unique name
+        while (true) {
+            try {
+                const channel = await slack.conversations.create({
+                    name: finalName,
+                    is_private: true
+                });
+
+                channelId = channel.channel.id;
+                break;
+
+            } catch (error) {
+                if (error.data?.error === "name_taken") {
+                    finalName = `${baseName}-content-${tier}-${count}`;
+                    count++;
+                } else {
+                    throw error;
+                }
+            }
+        }
+
+        // 🔹 Add YOU
+        const userId = process.env.YOUR_SLACK_USER_ID;
+
+        if (!userId) {
+            console.error("Missing YOUR_SLACK_USER_ID");
+            return;
+        }
+
         await slack.conversations.invite({
             channel: channelId,
-            users: YOUR_USER_ID
+            users: userId
         });
 
-        // 🔹 Send message
+        // 🔹 Confirmation message
         await slack.chat.postMessage({
             channel: channelId,
-            text: `✅ Channel created for *${clientName}*`
+            text: `Channel created for ${clientName} (${tier.toUpperCase()}) ✅`
         });
-
-        res.status(200).send("Success");
 
     } catch (error) {
         console.error("ERROR:", error.response?.data || error.message);
-        res.status(500).send("Error");
     }
 });
 
-// 🔥 START SERVER
+/*
+===========================================
+START SERVER
+===========================================
+*/
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
